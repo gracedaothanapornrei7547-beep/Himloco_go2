@@ -17,6 +17,7 @@ import sys
 import time
 import numpy as np
 import mujoco
+import mujoco.viewer
 import onnxruntime as ort
 
 # Default paths
@@ -310,7 +311,57 @@ def run_sim2sim(args):
     target_yaw_rad = 0.0
     num_steps = int(args.duration / env.policy_dt) if args.duration > 0 else int(1e9)
 
-    if args.headless:
+    if args.record_video:
+        import imageio
+        out_dir = os.path.dirname(os.path.abspath(args.record_video))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        renderer = mujoco.Renderer(env.model, height=480, width=640)
+        camera = mujoco.MjvCamera()
+        camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+        camera.distance = 2.5
+        camera.elevation = -15
+        camera.azimuth = 135
+        camera.lookat[:] = [1.0, 0.0, 0.4]
+
+        writer = imageio.get_writer(args.record_video, fps=args.fps, codec="libx264", quality=8)
+        print(f"[Recorder] Recording video to {args.record_video} ({args.duration}s at {args.fps}fps)...")
+
+        for step_idx in range(num_steps):
+            if args.heading_mode:
+                current_rpy = quat_to_euler_rpy(env.data.qpos[3:7])
+                yaw_rad = np.deg2rad(current_rpy[2])
+                yaw_err = (target_yaw_rad - yaw_rad + np.pi) % (2 * np.pi) - np.pi
+                cmd[2] = np.clip(args.heading_kp * yaw_err, -1.0, 1.0)
+
+            info = env.step(cmd)
+            lookat_z = info["pos"][2] if "stair" in args.scene else 0.38
+            cam_target = np.array([info["pos"][0] + 0.6, info["pos"][1], lookat_z])
+            camera.lookat[:] = 0.92 * camera.lookat + 0.08 * cam_target
+
+            # Auto-reset in stairs scene after climbing platform or after 30m on flat ground
+            if "stair" in args.scene and info["pos"][0] > 6.0:
+                print("\n[Auto-Reset] Successfully climbed stair platform! Respawning at start position...\n")
+                env.reset()
+            elif args.scene == "flat" and info["pos"][0] > 30.0:
+                print("\n[Auto-Reset] Ran 30m on flat ground! Respawning at start position...\n")
+                env.reset()
+
+            renderer.update_scene(env.data, camera=camera)
+            pixels = renderer.render()
+            writer.append_data(pixels)
+
+            sim_time = (step_idx + 1) * env.policy_dt
+            if step_idx % 25 == 0 or step_idx == num_steps - 1:
+                c_str = " ".join([f"{k}:{'●' if v else '○'}" for k, v in info["contacts"].items()])
+                print(
+                    f"[{sim_time:5.2f}s] Pos: ({info['pos'][0]:5.2f}, {info['pos'][1]:5.2f}, {info['pos'][2]:5.2f})m | "
+                    f"Vx: {info['vel'][0]:5.2f}m/s | Pitch: {info['rpy'][1]:+5.1f}° | Feet: [{c_str}] | Tau: {info['peak_torque']:4.1f}Nm"
+                )
+
+        writer.close()
+        print(f"\n[Done] Video saved successfully to {args.record_video}")
+    elif args.headless:
         start_time = time.time()
         for step_idx in range(num_steps):
             if args.heading_mode:
@@ -332,7 +383,6 @@ def run_sim2sim(args):
         total_wall = time.time() - start_time
         print(f"\n[Done] Executed {num_steps} policy steps in {total_wall:.2f}s (Speedup: {args.duration / total_wall:.1f}x real-time)")
     else:
-        import mujoco.viewer
         print("[Viewer] Launching MuJoCo passive viewer window on DISPLAY=:0...")
         with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
             # Set camera viewpoint
@@ -399,6 +449,8 @@ if __name__ == "__main__":
     parser.add_argument("--decimation", type=int, default=10, help="Physics substeps per policy step")
     parser.add_argument("--heading_mode", action="store_true", default=False, help="Enable automatic heading lock controller")
     parser.add_argument("--heading_kp", type=float, default=0.8, help="Heading lock P-gain (default 0.8)")
+    parser.add_argument("--record_video", type=str, default=None, help="Path to save recorded MP4 video")
+    parser.add_argument("--fps", type=int, default=50, help="Video FPS (default 50)")
     parser.add_argument("--headless", action="store_true", help="Run without graphical viewer")
 
     args = parser.parse_args()

@@ -70,3 +70,8 @@ tests/
 # Docker history
 .isaac-lab-docker-history
 MUJOCO_LOG.TXT
+
+# Local tools & diagnostic scripts (do not upload)
+tool/
+outputs/
+screenshot*.png
