@@ -148,10 +148,14 @@ class Go2MuJoCoSim2Sim:
         self.current_target_pos_mujoco = self.default_joint_pos_mujoco.copy()
 
         # 5. Load ONNX models
-        enc_path = os.path.join(model_dir, "exported", "encoder.onnx")
-        pol_path = os.path.join(model_dir, "exported", "policy.onnx")
+        if os.path.exists(os.path.join(model_dir, "encoder.onnx")) and os.path.exists(os.path.join(model_dir, "policy.onnx")):
+            enc_path = os.path.join(model_dir, "encoder.onnx")
+            pol_path = os.path.join(model_dir, "policy.onnx")
+        else:
+            enc_path = os.path.join(model_dir, "exported", "encoder.onnx")
+            pol_path = os.path.join(model_dir, "exported", "policy.onnx")
         if not os.path.exists(enc_path) or not os.path.exists(pol_path):
-            raise FileNotFoundError(f"ONNX models missing in: {model_dir}/exported/")
+            raise FileNotFoundError(f"ONNX models missing in: {model_dir} or {model_dir}/exported/")
         
         # CPU provider with 2 threads is plenty for real-time (sub-millisecond) inference
         so = ort.SessionOptions()
@@ -319,13 +323,13 @@ def run_sim2sim(args):
         renderer = mujoco.Renderer(env.model, height=480, width=640)
         camera = mujoco.MjvCamera()
         camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-        camera.distance = 2.5
-        camera.elevation = -15
-        camera.azimuth = 135
-        camera.lookat[:] = [1.0, 0.0, 0.4]
+        camera.distance = args.cam_distance
+        camera.elevation = args.cam_elevation
+        camera.azimuth = args.cam_azimuth
+        camera.lookat[:] = [0.8, 0.0, 0.35]
 
         writer = imageio.get_writer(args.record_video, fps=args.fps, codec="libx264", quality=8)
-        print(f"[Recorder] Recording video to {args.record_video} ({args.duration}s at {args.fps}fps)...")
+        print(f"[Recorder] Recording video to {args.record_video} ({args.duration}s at {args.fps}fps, az={args.cam_azimuth}, el={args.cam_elevation})...")
 
         for step_idx in range(num_steps):
             if args.heading_mode:
@@ -335,17 +339,19 @@ def run_sim2sim(args):
                 cmd[2] = np.clip(args.heading_kp * yaw_err, -1.0, 1.0)
 
             info = env.step(cmd)
-            lookat_z = info["pos"][2] if "stair" in args.scene else 0.38
-            cam_target = np.array([info["pos"][0] + 0.6, info["pos"][1], lookat_z])
-            camera.lookat[:] = 0.92 * camera.lookat + 0.08 * cam_target
+            lookat_z = info["pos"][2] + 0.15 if "stair" in args.scene else 0.38
+            cam_target = np.array([info["pos"][0] + 0.4, info["pos"][1], lookat_z])
+            camera.lookat[:] = 0.90 * camera.lookat + 0.10 * cam_target
 
             # Auto-reset in stairs scene after climbing platform or after 30m on flat ground
             if "stair" in args.scene and info["pos"][0] > 6.0:
                 print("\n[Auto-Reset] Successfully climbed stair platform! Respawning at start position...\n")
                 env.reset()
+                camera.lookat[:] = [0.8, 0.0, 0.35]
             elif args.scene == "flat" and info["pos"][0] > 30.0:
                 print("\n[Auto-Reset] Ran 30m on flat ground! Respawning at start position...\n")
                 env.reset()
+                camera.lookat[:] = [0.8, 0.0, 0.35]
 
             renderer.update_scene(env.data, camera=camera)
             pixels = renderer.render()
@@ -360,6 +366,7 @@ def run_sim2sim(args):
                 )
 
         writer.close()
+        renderer.close()
         print(f"\n[Done] Video saved successfully to {args.record_video}")
     elif args.headless:
         start_time = time.time()
@@ -385,11 +392,11 @@ def run_sim2sim(args):
     else:
         print("[Viewer] Launching MuJoCo passive viewer window on DISPLAY=:0...")
         with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
-            # Set camera viewpoint
-            viewer.cam.distance = 2.5
-            viewer.cam.elevation = -15
-            viewer.cam.azimuth = 135
-            viewer.cam.lookat[:] = [1.0, 0.0, 0.4]
+            # Set camera viewpoint to rear follow chase view
+            viewer.cam.distance = args.cam_distance
+            viewer.cam.elevation = args.cam_elevation
+            viewer.cam.azimuth = args.cam_azimuth
+            viewer.cam.lookat[:] = [0.8, 0.0, 0.35]
 
             step_idx = 0
             wall_start = time.time()
@@ -404,9 +411,9 @@ def run_sim2sim(args):
 
                 info = env.step(cmd)
                 # Camera track robot with dynamic Z on stairs, decoupled Z on flat ground
-                lookat_z = info["pos"][2] if "stair" in args.scene else 0.38
-                cam_target = np.array([info["pos"][0] + 0.6, info["pos"][1], lookat_z])
-                viewer.cam.lookat[:] = 0.92 * viewer.cam.lookat + 0.08 * cam_target
+                lookat_z = info["pos"][2] + 0.15 if "stair" in args.scene else 0.38
+                cam_target = np.array([info["pos"][0] + 0.45, info["pos"][1], lookat_z])
+                viewer.cam.lookat[:] = 0.90 * viewer.cam.lookat + 0.10 * cam_target
                 viewer.sync()
 
                 sim_time = (step_idx + 1) * env.policy_dt
@@ -440,7 +447,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_dir", type=str, default=DEFAULT_MODEL_DIR, help="Path to checkpoint directory")
     parser.add_argument("--assets_dir", type=str, default=DEFAULT_ASSETS_DIR, help="Path to Menagerie Go2 directory")
     parser.add_argument("--scene", type=str, choices=["flat", "stairs", "stairs_10cm", "stairs_5steps", "stairs_5steps_5cm", "stairs_5steps_15cm"], default="flat", help="Scene type")
-    parser.add_argument("--vx", type=float, default=0.5, help="Forward velocity command (m/s)")
+    parser.add_argument("--vx", type=float, default=0.9, help="Forward velocity command (m/s)")
     parser.add_argument("--vy", type=float, default=0.0, help="Lateral velocity command (m/s)")
     parser.add_argument("--wz", type=float, default=0.0, help="Yaw angular velocity command (rad/s)")
     parser.add_argument("--duration", type=float, default=10.0, help="Simulation duration (seconds)")
@@ -451,6 +458,9 @@ if __name__ == "__main__":
     parser.add_argument("--heading_kp", type=float, default=0.8, help="Heading lock P-gain (default 0.8)")
     parser.add_argument("--record_video", type=str, default=None, help="Path to save recorded MP4 video")
     parser.add_argument("--fps", type=int, default=50, help="Video FPS (default 50)")
+    parser.add_argument("--cam_azimuth", type=float, default=25.0, help="Camera azimuth angle (default 25.0 for rear-left chase view)")
+    parser.add_argument("--cam_elevation", type=float, default=-18.0, help="Camera elevation angle (default -18.0)")
+    parser.add_argument("--cam_distance", type=float, default=2.4, help="Camera distance (default 2.4)")
     parser.add_argument("--headless", action="store_true", help="Run without graphical viewer")
 
     args = parser.parse_args()

@@ -75,3 +75,4 @@ MUJOCO_LOG.TXT
 tool/
 outputs/
 screenshot*.png
+*.mp4

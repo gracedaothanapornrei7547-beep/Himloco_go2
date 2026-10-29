@@ -1,8 +1,8 @@
 # 四足机器人盲走强化学习标准训练路线与避坑红宝书（HIMLoco / Project-Robo 权威精华合卷）
 
 <div align="center">
-  <img src="docs/images/go2_stairs_15cm.gif" width="90%" alt="Unitree Go2 征服 15cm 极限台阶 (先直行后爬楼梯)"/>
-  <p><b>Unitree Go2 纯盲走实测：平地直行入阶 ➔ 顺畅翻越 15cm 连续极限台阶 ➔ 登顶高台循环 (MuJoCo Sim2Sim 物理级验证)</b></p>
+  <img src="docs/images/go2_stairs_15cm.gif" width="90%" alt="Unitree Go2 征服 15cm 极限台阶 (后视追随越肩视角: 先直行后爬楼梯)"/>
+  <p><b>Unitree Go2 纯盲走实测：平地高速助跑直行 ($v_x = 0.9\,\text{m/s}$) ➔ 顺畅翻越 15cm 连续极限台阶 ➔ 登顶高台冲刺 (MuJoCo Sim2Sim 后方追随越肩实拍)</b></p>
 </div>
 
 > **文档定位**：面向四足机器人强化学习研发人员的实战规范与避坑红宝书。全面融合 `/home/rum/isaac/Himloco.md` 教学精髓与本地实操攻坚经验（从早期 `stair_curriculum` 踩坑到后期 `p73` 攻克 15cm 极限台阶全流程），系统提炼出感官解码、HIM 特权网络、3:1 正负天平律、四大避坑血泪史、OOD 画圆破案真相、四阶段标准路线、量纲配平大表及真机 C++ 部署对接全链路。
