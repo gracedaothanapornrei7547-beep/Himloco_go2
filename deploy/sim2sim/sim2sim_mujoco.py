@@ -458,8 +458,8 @@ if __name__ == "__main__":
     parser.add_argument("--heading_kp", type=float, default=0.8, help="Heading lock P-gain (default 0.8)")
     parser.add_argument("--record_video", type=str, default=None, help="Path to save recorded MP4 video")
     parser.add_argument("--fps", type=int, default=50, help="Video FPS (default 50)")
-    parser.add_argument("--cam_azimuth", type=float, default=25.0, help="Camera azimuth angle (default 25.0 for rear-left chase view)")
-    parser.add_argument("--cam_elevation", type=float, default=-18.0, help="Camera elevation angle (default -18.0)")
+    parser.add_argument("--cam_azimuth", type=float, default=-25.0, help="Camera azimuth angle (default -25.0 for rear-left chase view)")
+    parser.add_argument("--cam_elevation", type=float, default=-15.0, help="Camera elevation angle (default -15.0)")
     parser.add_argument("--cam_distance", type=float, default=2.4, help="Camera distance (default 2.4)")
     parser.add_argument("--headless", action="store_true", help="Run without graphical viewer")
 
