@@ -20,9 +20,17 @@ import mujoco
 import mujoco.viewer
 import onnxruntime as ort
 
-# Default paths
-DEFAULT_MODEL_DIR = "/home/rum/himloco_lab/logs/himloco_rsl_rl/go2_rough/exported_best_13600"
-DEFAULT_ASSETS_DIR = "/home/rum/himloco_assets/mujoco_menagerie/unitree_go2"
+# Default paths (relative to repository root for zero-config portable deployment)
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR = os.path.dirname(os.path.dirname(CURRENT_DIR))
+
+# Auto-locate model directory: prefer repo's pretrained_models/himloco_go2
+DEFAULT_MODEL_DIR = os.path.join(REPO_DIR, "pretrained_models", "himloco_go2")
+
+# Auto-locate MuJoCo assets: prefer in-repo deploy/sim2sim/assets/unitree_go2, fallback to external
+IN_REPO_ASSETS = os.path.join(CURRENT_DIR, "assets", "unitree_go2")
+EXTERNAL_ASSETS = os.environ.get("UNITREE_MUJOCO_DIR", "/home/rum/himloco_assets/mujoco_menagerie/unitree_go2")
+DEFAULT_ASSETS_DIR = IN_REPO_ASSETS if os.path.exists(IN_REPO_ASSETS) else EXTERNAL_ASSETS
 
 
 def quat_apply_inverse(quat, vec):
@@ -112,6 +120,10 @@ class Go2MuJoCoSim2Sim:
 
         # Dynamic action scale and observation terms from params/deploy.yaml
         deploy_yaml = os.path.join(model_dir, "params", "deploy.yaml")
+        if not os.path.exists(deploy_yaml):
+            parent_deploy = os.path.join(os.path.dirname(model_dir), "params", "deploy.yaml")
+            if os.path.exists(parent_deploy):
+                deploy_yaml = parent_deploy
         self.use_gait_phase = False
         self.gait_period = 0.40
         self.global_phase = 0.0
@@ -139,15 +151,7 @@ class Go2MuJoCoSim2Sim:
         else:
             self.action_scale = np.array([0.25] * 12, dtype=np.float32)
 
-        # 4. History buffer (6 steps * num_obs)
-        self.num_obs = 47 if self.use_gait_phase else 45
-        self.history_len = 6
-        self.history_buffer = np.zeros(self.num_obs * self.history_len, dtype=np.float32)
-        self.last_action = np.zeros(12, dtype=np.float32)
-        self.last_action_raw = np.zeros(12, dtype=np.float32)
-        self.current_target_pos_mujoco = self.default_joint_pos_mujoco.copy()
-
-        # 5. Load ONNX models
+        # 4. Load ONNX models
         if os.path.exists(os.path.join(model_dir, "encoder.onnx")) and os.path.exists(os.path.join(model_dir, "policy.onnx")):
             enc_path = os.path.join(model_dir, "encoder.onnx")
             pol_path = os.path.join(model_dir, "policy.onnx")
@@ -162,6 +166,16 @@ class Go2MuJoCoSim2Sim:
         so.intra_op_num_threads = 2
         self.enc_sess = ort.InferenceSession(enc_path, sess_options=so, providers=["CPUExecutionProvider"])
         self.pol_sess = ort.InferenceSession(pol_path, sess_options=so, providers=["CPUExecutionProvider"])
+
+        # 5. History buffer (auto-detected from encoder input shape)
+        enc_in_dim = self.enc_sess.get_inputs()[0].shape[1]
+        self.num_obs = 47 if self.use_gait_phase else 45
+        self.history_len = enc_in_dim // self.num_obs
+        self.history_buffer = np.zeros(enc_in_dim, dtype=np.float32)
+        self.last_action = np.zeros(12, dtype=np.float32)
+        self.last_action_raw = np.zeros(12, dtype=np.float32)
+        self.current_target_pos_mujoco = self.default_joint_pos_mujoco.copy()
+        print(f"[INFO] Auto-detected encoder input dim: {enc_in_dim} -> history_len={self.history_len} (num_obs={self.num_obs})")
 
         # Foot geom IDs for contact detection
         self.foot_geom_ids = {}
@@ -391,29 +405,114 @@ def run_sim2sim(args):
         print(f"\n[Done] Executed {num_steps} policy steps in {total_wall:.2f}s (Speedup: {args.duration / total_wall:.1f}x real-time)")
     else:
         print("[Viewer] Launching MuJoCo passive viewer window on DISPLAY=:0...")
-        with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
-            # Set camera viewpoint to rear follow chase view
+        target_cmd = np.array([args.vx, args.vy, args.wz], dtype=np.float32)
+        target_yaw_rad = [0.0]
+        reset_requested = [False]
+        heading_mode = [args.heading_mode]
+        base_body_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "base")
+
+        print("=" * 70)
+        print("  🎮 键盘实时遥控键位映射 (与 robot_lab / HIMLoco 全局对齐)")
+        print("  [ W / ↑ ] 前进加速 (+0.15 m/s)      [ S / ↓ ] 后退减速 (-0.15 m/s)")
+        print("  [   A   ] 向左横移 (+0.10 m/s)      [   D   ] 向右横移 (-0.10 m/s)")
+        print("  [ Q / ← ] 原地左自转 (+0.20 rad/s)   [ E / → ] 原地右自转 (-0.20 rad/s)")
+        print("  [Space/X] 急停刹车 (速度归零)       [   R   ] 复位机器狗回原点")
+        print("  [   H   ] 切换航向锁模式 (自动锁向直行 / 自由手控转向)")
+        print("  [ C / V ] 切换自由漫游 / 自动跟踪视角 (鼠标左键旋转/右键缩放/中键平移)")
+        print("=" * 70)
+
+        viewer_ref = [None]
+
+        def teleop_key_callback(key):
+            # C / V: 切换自由视角 / 自动跟随视角
+            if key in (67, ord('c'), ord('C'), 86, ord('v'), ord('V')):
+                if viewer_ref[0] is not None:
+                    v = viewer_ref[0]
+                    if v.cam.type == mujoco.mjtCamera.mjCAMERA_TRACKING:
+                        v.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+                        v.cam.lookat[:] = env.data.qpos[0:3]
+                        print(f"\r[CAMERA] 切换为自由漫游视角 (Free Camera) - 鼠标可自由旋转/缩放/平移   \n", end="", flush=True)
+                    else:
+                        v.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                        v.cam.trackbodyid = base_body_id
+                        print(f"\r[CAMERA] 切换为跟随视角 (Tracking Camera) - 随狗移动，鼠标可360°环绕   \n", end="", flush=True)
+                return
+
+            # H: 切换 Heading Mode
+            if key in (72, ord('h'), ord('H')):
+                heading_mode[0] = not heading_mode[0]
+                print(f"\r[HEADING] 航向锁定模式已{'开启 (自动校准直行)' if heading_mode[0] else '关闭 (完全手控转向)'}   \n", end="", flush=True)
+                return
+
+            # W / ↑ (前进加速 +0.15 m/s)
+            if key in (87, ord('w'), ord('W'), 265):
+                target_cmd[0] = float(np.clip(target_cmd[0] + 0.15, -0.6, 2.0))
+                print(f"\r[TELEOP] W / ↑ (前进) -> Vx: {target_cmd[0]:+.2f} m/s, Vy: {target_cmd[1]:+.2f} m/s, Wz: {target_cmd[2]:+.2f} rad/s    \n", end="", flush=True)
+            # S / ↓ (后退减速 -0.15 m/s)
+            elif key in (83, ord('s'), ord('S'), 264):
+                target_cmd[0] = float(np.clip(target_cmd[0] - 0.15, -0.6, 2.0))
+                print(f"\r[TELEOP] S / ↓ (后退) -> Vx: {target_cmd[0]:+.2f} m/s, Vy: {target_cmd[1]:+.2f} m/s, Wz: {target_cmd[2]:+.2f} rad/s    \n", end="", flush=True)
+            # A (左横移 +0.10 m/s)
+            elif key in (65, ord('a'), ord('A')):
+                target_cmd[1] = float(np.clip(target_cmd[1] + 0.10, -0.6, 0.6))
+                print(f"\r[TELEOP] A (左横移) -> Vx: {target_cmd[0]:+.2f} m/s, Vy: {target_cmd[1]:+.2f} m/s, Wz: {target_cmd[2]:+.2f} rad/s    \n", end="", flush=True)
+            # D (右横移 -0.10 m/s)
+            elif key in (68, ord('d'), ord('D')):
+                target_cmd[1] = float(np.clip(target_cmd[1] - 0.10, -0.6, 0.6))
+                print(f"\r[TELEOP] D (右横移) -> Vx: {target_cmd[0]:+.2f} m/s, Vy: {target_cmd[1]:+.2f} m/s, Wz: {target_cmd[2]:+.2f} rad/s    \n", end="", flush=True)
+            # Q / ← (左自转 +0.20 rad/s)
+            elif key in (81, ord('q'), ord('Q'), 263):
+                target_cmd[2] = float(np.clip(target_cmd[2] + 0.20, -1.5, 1.5))
+                target_yaw_rad[0] += 0.20
+                print(f"\r[TELEOP] Q / ← (左自转) -> Vx: {target_cmd[0]:+.2f} m/s, Vy: {target_cmd[1]:+.2f} m/s, Wz: {target_cmd[2]:+.2f} rad/s    \n", end="", flush=True)
+            # E / → (右自转 -0.20 rad/s)
+            elif key in (69, ord('e'), ord('E'), 262):
+                target_cmd[2] = float(np.clip(target_cmd[2] - 0.20, -1.5, 1.5))
+                target_yaw_rad[0] -= 0.20
+                print(f"\r[TELEOP] E / → (右自转) -> Vx: {target_cmd[0]:+.2f} m/s, Vy: {target_cmd[1]:+.2f} m/s, Wz: {target_cmd[2]:+.2f} rad/s    \n", end="", flush=True)
+            # Space / X (急停刹车)
+            elif key in (32, 88, ord('x'), ord('X')):
+                target_cmd[:] = [0.0, 0.0, 0.0]
+                print(f"\r[TELEOP] SPACE / X (急停刹车) -> 速度归零!                                             \n", end="", flush=True)
+            # R (复位)
+            elif key in (82, ord('r'), ord('R')):
+                reset_requested[0] = True
+                target_cmd[:] = [args.vx, args.vy, args.wz]
+                target_yaw_rad[0] = 0.0
+                print(f"\r[TELEOP] R (复位) -> 机器狗回到原点!                                                 \n", end="", flush=True)
+
+        with mujoco.viewer.launch_passive(env.model, env.data, key_callback=teleop_key_callback) as viewer:
+            viewer_ref[0] = viewer
+            # 默认使用跟随视角
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            viewer.cam.trackbodyid = base_body_id
             viewer.cam.distance = args.cam_distance
             viewer.cam.elevation = args.cam_elevation
             viewer.cam.azimuth = args.cam_azimuth
-            viewer.cam.lookat[:] = [0.8, 0.0, 0.35]
 
             step_idx = 0
             wall_start = time.time()
 
             while viewer.is_running() and step_idx < num_steps:
                 step_start = time.time()
-                if args.heading_mode:
+                if reset_requested[0]:
+                    env.reset()
+                    reset_requested[0] = False
+                    time.sleep(0.05)
+
+                cmd = target_cmd.copy()
+                if heading_mode[0]:
                     current_rpy = quat_to_euler_rpy(env.data.qpos[3:7])
                     yaw_rad = np.deg2rad(current_rpy[2])
-                    yaw_err = (target_yaw_rad - yaw_rad + np.pi) % (2 * np.pi) - np.pi
+                    yaw_err = (target_yaw_rad[0] - yaw_rad + np.pi) % (2 * np.pi) - np.pi
                     cmd[2] = np.clip(args.heading_kp * yaw_err, -1.0, 1.0)
 
                 info = env.step(cmd)
-                # Camera track robot with dynamic Z on stairs, decoupled Z on flat ground
-                lookat_z = info["pos"][2] + 0.15 if "stair" in args.scene else 0.38
-                cam_target = np.array([info["pos"][0] + 0.45, info["pos"][1], lookat_z])
-                viewer.cam.lookat[:] = 0.90 * viewer.cam.lookat + 0.10 * cam_target
+                # Camera track robot in Free Camera mode
+                if viewer.cam.type == mujoco.mjtCamera.mjCAMERA_FREE:
+                    lookat_z = info["pos"][2] + 0.15 if "stair" in args.scene else 0.38
+                    cam_target = np.array([info["pos"][0] + 0.45, info["pos"][1], lookat_z])
+                    viewer.cam.lookat[:] = 0.90 * viewer.cam.lookat + 0.10 * cam_target
                 viewer.sync()
 
                 sim_time = (step_idx + 1) * env.policy_dt
@@ -439,7 +538,8 @@ def run_sim2sim(args):
                 if elapsed < env.policy_dt:
                     time.sleep(env.policy_dt - elapsed)
 
-        print("[Viewer] Window closed.")
+        viewer_ref[0] = None
+        print("[Viewer] Window closed cleanly.")
 
 
 if __name__ == "__main__":

@@ -11,5 +11,5 @@ FSM:
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
   Velocity:
-    policy_dir: ../../../logs/himloco_rsl_rl/go2_rough
+    policy_dir: ../../../pretrained_models/himloco_go2
     

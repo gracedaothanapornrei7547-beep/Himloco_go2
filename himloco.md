@@ -7,7 +7,15 @@
 
 > **文档定位**：面向四足机器人强化学习研发人员的实战规范与避坑红宝书。全面融合 `/home/rum/isaac/Himloco.md` 教学精髓与本地实操攻坚经验（从早期 `stair_curriculum` 踩坑到后期 `p73` 攻克 15cm 极限台阶全流程），系统提炼出感官解码、HIM 特权网络、3:1 正负天平律、四大避坑血泪史、OOD 画圆破案真相、四阶段标准路线、量纲配平大表及真机 C++ 部署对接全链路。
 > 
-> **开源预训练模型发布**：本项目已随仓附带最新训练验证的完整预训练模型资产（位于 [`pretrained_models/himloco_go2/`](pretrained_models/himloco_go2/)，包含 `model_7898.pt` 以及开箱即用的 JIT `policy.pt`、ONNX `policy.onnx` 和 `encoder.onnx`），无需重复耗费 8 小时训练，克隆仓库后即可一键运行 MuJoCo Sim2Sim 验机！
+> **开源预训练模型发布**：本项目已随仓附带最新训练验证的完整预训练模型资产（位于 [`pretrained_models/himloco_go2/`](pretrained_models/himloco_go2/)，包含 `model_7898.pt` 以及开箱即用的 JIT `policy.pt`、ONNX `policy.onnx`、`encoder.onnx` 与完整 `params/deploy.yaml` 元参数），无需重复耗费 8 小时训练，克隆仓库后即可一键运行 MuJoCo Sim2Sim 验机！
+>
+> **🚀 开箱即用快速验机（Zero-Config Quickstart）**：
+> 仓库已完全自包含 Go2 仿真网格与预训练资产，安装基础依赖后可直接无参一键拉起 MuJoCo 仿真并支持键盘实时遥控：
+> ```bash
+> pip install mujoco onnxruntime numpy
+> # 默认无参运行即自动加载仓内模型与 15cm 台阶场景（后视追随越肩视角，支持 W/A/S/D 键盘遥控）：
+> python deploy/sim2sim/sim2sim_mujoco.py --scene stairs_5steps_15cm
+> ```
 
 ---
 

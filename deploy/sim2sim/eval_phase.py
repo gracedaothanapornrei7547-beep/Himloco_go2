@@ -29,7 +29,12 @@ if CURRENT_DIR not in sys.path:
 from sim2sim_mujoco import Go2MuJoCoSim2Sim
 
 
-def evaluate_checkpoint(model_dir, assets_dir="/home/rum/himloco_assets/mujoco_menagerie/unitree_go2", duration=8.0):
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+IN_REPO_ASSETS = os.path.join(CURRENT_DIR, "assets", "unitree_go2")
+DEFAULT_ASSETS = IN_REPO_ASSETS if os.path.exists(IN_REPO_ASSETS) else "/home/rum/himloco_assets/mujoco_menagerie/unitree_go2"
+
+
+def evaluate_checkpoint(model_dir, assets_dir=DEFAULT_ASSETS, duration=8.0):
     flat_scene = os.path.join(assets_dir, "scene.xml")
     stairs_scene = os.path.join(assets_dir, "scene_stairs_10cm.xml")
 

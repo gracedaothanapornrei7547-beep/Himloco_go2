@@ -36,12 +36,12 @@ def lin_vel_cmd_levels(
         reward_low = torch.mean(env.reward_manager._episode_sums[reward_term_name][low_vel_env_ids]) / env.max_episode_length if len(low_vel_env_ids) > 0 else 0.0
         reward_high = torch.mean(env.reward_manager._episode_sums[reward_term_name][high_vel_env_ids]) / env.max_episode_length if len(high_vel_env_ids) > 0 else 0.0
 
-        # Only update curriculum if both groups are performing well
-        # ★ 对齐官方 update_command_curriculum（legged_robot.py:590）：门槛 = weight * 0.8，
-        #   且 episode_sums 除以 max_episode_length（步数，1000），不是 max_episode_length_s（秒，20）。
-        #   原实现两处都偏：阈值 0.6、除数用秒 —— 除数差 dt=0.02 倍即把判据放大 50 倍，几乎恒真。
-        #   当时靠 curriculums_limit_ranges=(-1,1) 把速度锁死在 ±1.0 兜底，现已一并回官方 (-2,2)。
-        if reward_low > reward_term.weight * 0.8 and reward_high > reward_term.weight * 0.8:
+        # Both groups must exceed 80% of the maximum reward per policy step.
+        # IsaacLab episode sums include step_dt, but the configured weight does not.
+        # Official HIMLoco divides by episode steps too; its runtime reward_scales
+        # already include dt through _prepare_reward_function (lines 724-730).
+        # https://github.com/InternRobotics/HIMLoco/blob/ef289acaa62795009363b7b819c9186690630441/legged_gym/legged_gym/envs/base/legged_robot.py#L579-L592
+        if reward_low > reward_term.weight * env.step_dt * 0.8 and reward_high > reward_term.weight * env.step_dt * 0.8:
             delta_command = torch.tensor([-0.2, 0.2], device=env.device)
             ranges.lin_vel_x = torch.clamp(
                 torch.tensor(ranges.lin_vel_x, device=env.device) + delta_command,
